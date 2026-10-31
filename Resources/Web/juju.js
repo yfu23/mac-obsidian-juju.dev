@@ -466,7 +466,7 @@
     }
   }
 
-  function renderBaseView(view, source) {
+  function renderBaseView(view, source, sortable) {
     let html = '';
     if (view.error) html += `<div class="bases-error">${esc(view.error)}</div>`;
     const cols = view.columns;
@@ -475,23 +475,44 @@
     const supported = ['table', 'cards', 'list'].includes(view.type);
     if (!supported) html += `<div class="bases-note">The “${esc(view.type)}” view isn’t supported yet; showing a table.</div>`;
     const type = supported ? view.type : 'table';
+    const opt = view.options || {};
     if (type === 'table') {
-      html += '<div class="bases-table-container"><table class="bases-table"><thead><tr>';
-      html += cols.map((c) => `<th>${esc(c.name)}</th>`).join('') + '</tr></thead><tbody>';
+      // Column widths from resizing (columnSize) and Obsidian's row height option.
+      const width = (c) => {
+        const w = (view.columnSize || {})[c.id];
+        return w ? ` style="width:${w}px;min-width:${w}px;max-width:${w}px"` : '';
+      };
+      const rowHeight = ['medium', 'tall', 'extra'].includes(opt.rowHeight) ? ` row-height-${opt.rowHeight}` : '';
+      html += `<div class="bases-table-container"><table class="bases-table${rowHeight}"><thead><tr>`;
+      // A read-only .base: clicking a header sorts for viewing only (A → Z, Z → A, then the file's own sort).
+      const sorted = sortable && view.viewSort;
+      const arrow = (c) => sorted && sorted.property === c.id
+        ? `<span class="bases-th-sort">${icon(sorted.ascending ? 'arrow-up' : 'arrow-down')}</span>` : '';
+      const title = sortable ? ' title="Sort (view only)"' : '';
+      html += cols.map((c) => `<th data-col="${esc(c.id)}"${width(c)}${title}><span class="bases-th-name">${esc(c.name)}</span>${arrow(c)}</th>`).join('') + '</tr></thead><tbody>';
       for (const g of view.groups) {
         if (g.key) html += `<tr class="bases-group-row"><td colspan="${cols.length}">${groupHeader(g)}</td></tr>`;
-        for (const r of g.rows) html += '<tr>' + r.cells.map((c) => `<td>${renderBaseCell(c, source)}</td>`).join('') + '</tr>';
+        for (const r of g.rows) {
+          html += `<tr data-path="${esc(r.path)}">` + r.cells.map((c, i) =>
+            `<td data-col="${i}" data-col-id="${esc(cols[i].id)}"${width(cols[i])}>${renderBaseCell(c, source)}</td>`).join('') + '</tr>';
+        }
       }
       html += '</tbody>';
       if (summaries) html += '<tfoot><tr>' + view.summaries.map((s) => `<td>${esc(s)}</td>`).join('') + '</tr></tfoot>';
       html += '</table></div>';
     } else if (type === 'cards') {
+      // Obsidian's card options: size (min card width), image fit and aspect ratio (cover height / width).
+      const size = Number(opt.cardSize) > 0 ? Number(opt.cardSize) : 0;
+      const ratio = Number(opt.imageAspectRatio) > 0 ? Number(opt.imageAspectRatio) : 0;
+      const gridStyle = size ? ` style="grid-template-columns:repeat(auto-fill,minmax(${size}px,1fr))"` : '';
+      const coverStyle = ratio ? ` style="aspect-ratio:1 / ${ratio}"` : '';
+      const fit = opt.imageFit === 'contain' ? ' is-contain' : '';
       for (const g of view.groups) {
         if (g.key) html += `<div class="bases-group-heading">${groupHeader(g)}</div>`;
-        html += '<div class="bases-cards">';
+        html += `<div class="bases-cards"${gridStyle}>`;
         for (const r of g.rows) {
           html += '<div class="bases-card">';
-          if (r.image) html += `<div class="bases-card-cover">${renderBaseCell(r.image, source)}</div>`;
+          if (r.image) html += `<div class="bases-card-cover${fit}"${coverStyle}>${renderBaseCell(r.image, source)}</div>`;
           html += `<div class="bases-card-title">${renderBaseCell(r.cells[0], source)}</div>`;
           r.cells.slice(1).forEach((c, i) => {
             const value = renderBaseCell(c, source);
@@ -502,30 +523,78 @@
         html += '</div>';
       }
     } else {
+      // Obsidian's list options: markers (bullet/number/none), indented properties or a separator.
+      const tag = opt.markers === 'number' ? 'ol' : 'ul';
+      const markers = opt.markers === 'none' ? ' no-markers' : '';
+      const indent = opt.indentProperties === 'true';
+      const sep = opt.separator ?? ', ';
       for (const g of view.groups) {
         if (g.key) html += `<div class="bases-group-heading">${groupHeader(g)}</div>`;
-        html += '<ul class="bases-list">';
+        html += `<${tag} class="bases-list${markers}">`;
         for (const r of g.rows) {
           const rest = r.cells.slice(1).map((c) => renderBaseCell(c, source)).filter(Boolean);
-          html += `<li>${renderBaseCell(r.cells[0], source)}${rest.length ? ' <span class="bases-list-props">' + rest.join(' · ') + '</span>' : ''}</li>`;
+          const props = !rest.length ? ''
+            : indent ? '<ul class="bases-list-indented">' + rest.map((x) => `<li>${x}</li>`).join('') + '</ul>'
+              : ' <span class="bases-list-props">' + rest.join(esc(sep)) + '</span>';
+          html += `<li>${renderBaseCell(r.cells[0], source)}${props}</li>`;
         }
-        html += '</ul>';
+        html += `</${tag}>`;
       }
     }
     if (!view.groups.some((g) => g.rows.length)) html += '<div class="bases-empty-state">No results</div>';
     return html;
   }
 
-  /// A base with its view switcher. `source` is the file links in cells resolve from.
-  function renderBase(result, source) {
+  // The view shown per base (by name), kept across re-renders.
+  const baseSelection = {};
+
+  /// A base with its view switcher. `source` is the file links in cells resolve from. `edit` ({cfg, props}) makes it
+  /// editable (an unlocked .base): bases-edit.js adds the toolbar, menus and cell editing. `sortable` (a read-only
+  /// .base tab) lets table headers ask the app for a view-only sort; the file isn't changed.
+  function renderBase(result, source, edit, sortable) {
     const box = document.createElement('div');
     box.className = 'bases-view';
-    if (!result || !result.views || !result.views.length) {
-      box.innerHTML = `<div class="bases-error">${esc(result?.error || 'This base has no views.')}</div>`;
-      return box;
-    }
-    let selected = Math.min(result.selected || 0, result.views.length - 1);
+    let selected = 0;
+    const pick = () => {
+      const remembered = baseSelection[source];
+      const i = remembered == null ? -1 : result.views.findIndex((v) => v.name === remembered);
+      selected = i >= 0 ? i : Math.min(result.selected || 0, result.views.length - 1);
+    };
+    let saveTimer = null;
+    const ctx = edit && {
+      source, cfg: edit.cfg, props: edit.props, rawFilters: new Set(),
+      get selected() { return selected; },
+      select(i) { selected = i; baseSelection[source] = (ctx.cfg.views[i] || {}).name ?? null; },
+      save() {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+        post({ type: 'baseSave', path: source, yaml: window.JujuBaseEditor.dumpYAML(ctx.cfg) });
+      },
+      saveSoon() {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => ctx.save(), 400);
+      },
+      redraw: () => draw(),
+    };
+    box.__update = (newResult, newEdit) => {
+      result = newResult;
+      if (ctx && newEdit) {
+        // Keep the object open popovers are editing unless the file changed some other way.
+        if (!saveTimer && JSON.stringify(newEdit.cfg) !== JSON.stringify(ctx.cfg)) {
+          window.JujuBaseEditor.closePopover();
+          ctx.cfg = newEdit.cfg;
+        }
+        ctx.props = newEdit.props;
+      }
+      pick();
+      draw();
+    };
     const draw = () => {
+      if (!result || !result.views || !result.views.length) {
+        box.innerHTML = `<div class="bases-error">${esc(result?.error || 'This base has no views.')}</div>`;
+        return;
+      }
+      selected = Math.min(selected, result.views.length - 1);
       const view = result.views[selected];
       const tabs = result.views.map((v, i) =>
         `<button class="bases-view-tab${i === selected ? ' is-active' : ''}" data-index="${i}">${icon(BASE_VIEW_ICON[v.type] || 'list')}<span>${esc(v.name)}</span></button>`).join('');
@@ -533,16 +602,41 @@
       box.innerHTML = `<div class="bases-toolbar"><div class="bases-view-tabs">${tabs}</div><div class="bases-count">${count}</div></div>`;
       const body = document.createElement('div');
       body.className = 'bases-body';
-      body.appendChild(sanitize(renderBaseView(view, source), source));
+      const sorting = sortable && !ctx;
+      body.appendChild(sanitize(renderBaseView(view, source, sorting), source));
       box.appendChild(body);
-      box.querySelectorAll('.bases-view-tab').forEach((b) => b.addEventListener('click', (ev) => {
+      if (sorting) {
+        box.classList.add('is-sortable');
+        box.querySelectorAll('table.bases-table thead th[data-col]').forEach((th) => th.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const id = th.dataset.col, cur = view.viewSort;
+          const next = !cur || cur.property !== id ? 'ASC' : cur.ascending ? 'DESC' : null;
+          post({ type: 'baseSort', path: source, view: view.name, property: next ? id : null, direction: next });
+        }));
+      }
+      box.querySelectorAll('.bases-view-tab[data-index]').forEach((b) => b.addEventListener('click', (ev) => {
         ev.stopPropagation();
         selected = Number(b.dataset.index);
+        baseSelection[source] = result.views[selected].name;
         draw();
       }));
+      if (ctx && window.JujuBaseEditor) {
+        box.classList.add('is-editable');
+        window.JujuBaseEditor.decorate(ctx, box, view);
+      }
     };
+    if (result && result.views && result.views.length) pick();
     draw();
     return box;
+  }
+
+  let mainBase = null;
+  const baseEdit = (p) => (p.baseEditable && p.baseConfig ? { cfg: JSON.parse(p.baseConfig), props: p.baseProperties || [] } : null);
+  // The app re-evaluated this tab's .base (its settings or the notes changed): redraw it in place.
+  function updateBase(p) {
+    if (!mainBase || !p || p.path !== payload.path) return;
+    payload.base = p.base;
+    mainBase.__update(p.base, baseEdit(p));
   }
 
   function fillBaseBlocks(container) {
@@ -783,7 +877,8 @@
         break;
       case 'base':
         root.insertAdjacentHTML('beforeend', `<div class="inline-title">${esc(payload.title)}</div>`);
-        root.appendChild(renderBase(payload.base, payload.path));
+        mainBase = renderBase(payload.base, payload.path, baseEdit(payload), true);
+        root.appendChild(mainBase);
         break;
       case 'canvas':
         root.innerHTML = renderFileMessage(`Canvas files can't be displayed in the viewer yet.`);
@@ -1009,6 +1104,6 @@
     if (root.querySelector('pre.mermaid[data-processed]')) post({ type: 'rerender' });
   });
 
-  window.juju = { render, setOptions, scrollToSubpath, scrollToHeadingId, zoomImage, mermaidLoaded: () => mermaidReady && mermaidReady() };
+  window.juju = { render, setOptions, scrollToSubpath, scrollToHeadingId, zoomImage, updateBase, mermaidLoaded: () => mermaidReady && mermaidReady() };
   post({ type: 'ready' });
 })();

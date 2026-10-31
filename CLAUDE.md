@@ -64,3 +64,10 @@
   parser), `Bases.swift` (evaluator + view engine → `BaseResult` JSON). `RenderPayload` carries `base` (for .base files),
   `bases` (```base blocks keyed by `baseBlockKey(source, content)`) and `Embed.base` (`![[x.base]]`); `juju.js`
   `renderBase` draws table/cards/list. Tabs showing bases re-render on any vault change (`showsBases`).
+  Editing (unlocked `.base` tabs, `VaultModel.unlockedBases`): `Resources/Web/bases-edit.js` (toolbar popovers, filter
+  builder, column menus, cell editing) edits `payload.baseConfig` (the YAML as ordered JSON, `YAMLValue.json`) and posts
+  `baseSave` (whole YAML via its `dumpYAML`) or `baseCell`; `VaultModel.saveBase` / `setBaseCell` write with
+  `NoteWriter.rewrite`, and the tab updates in place (`updateBaseInPlace` → `window.juju.updateBase`), not re-rendered.
+  Read-only `.base` tabs: table header clicks post `baseSort` → `VaultModel.setBaseSort` (view-only, never written;
+  `baseSorts[tabID]` keyed by view name, dropped on another path / tab close / unlock) → `renderPayload(baseSort:)` →
+  `BaseEngine.evaluate(sortOverrides:)` (sorts before `limit`; echoed as `BaseViewResult.viewSort` for the arrow).

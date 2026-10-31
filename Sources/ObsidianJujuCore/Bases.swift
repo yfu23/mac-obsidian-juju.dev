@@ -39,6 +39,8 @@ public struct BaseColumn: Encodable, Sendable {
 public struct BaseRow: Encodable, Sendable {
     public let path: String
     public let cells: [BaseCell]
+    /// The note's own value for each `note.*` column (nil for other columns or when unset), for editing cells.
+    public var raw: [PropertyValue?] = []
     /// Cards view cover image (vault path or URL).
     public var image: BaseCell?
 }
@@ -57,6 +59,22 @@ public struct BaseViewResult: Encodable, Sendable {
     /// Summary text per column ("" when none).
     public let summaries: [String]
     public let error: String?
+    /// Column widths set by resizing (`columnSize`), by column id.
+    public var columnSize: [String: Int] = [:]
+    /// Layout options as written in the view (rowHeight, cardSize, imageFit, imageAspectRatio, markers, …).
+    public var options: [String: String] = [:]
+    /// The view-only sort applied by clicking a column header (read-only .base tabs), if any.
+    public var viewSort: BaseSortKey?
+}
+
+/// A sort chosen while viewing a read-only base: affects the shown rows only, never the file.
+public struct BaseSortKey: Codable, Equatable, Sendable {
+    public let property: String
+    public let ascending: Bool
+    public init(property: String, ascending: Bool) {
+        self.property = property
+        self.ascending = ascending
+    }
 }
 
 public struct BaseResult: Encodable, Sendable {
@@ -604,6 +622,8 @@ public struct BaseDefinition {
         public var limit: Int?
         public var summaries: [String: String] = [:]
         public var image: String?
+        public var columnSize: [String: Int] = [:]
+        public var options: [String: String] = [:]
     }
 
     public var filters: Filter?
@@ -636,6 +656,13 @@ public struct BaseDefinition {
             view.limit = item["limit"]?.string.flatMap { Int($0) }
             for (k, v) in item["summaries"]?.pairs ?? [] { view.summaries[Self.normalize(k)] = v.string ?? "" }
             view.image = item["image"]?.string.map(Self.normalize)
+            for (k, v) in item["columnSize"]?.pairs ?? [] {
+                if let w = v.string.flatMap({ Double($0) }) { view.columnSize[Self.normalize(k)] = Int(w) }
+            }
+            for (k, v) in item.pairs where v.string != nil
+                && !["type", "name", "limit", "image", "filters", "order", "sort", "groupBy"].contains(k) {
+                view.options[k] = v.string
+            }
             views.append(view)
         }
         if views.isEmpty { views = [View(type: "table", name: "Table")] }
@@ -663,7 +690,10 @@ public struct BaseDefinition {
 }
 
 enum BaseEngine {
-    static func evaluate(yaml: String, thisPath: String?, viewName: String?, env: BaseEnvironment) -> BaseResult {
+    /// `sortOverrides` (by view name) replace the primary sort of those views; the file's own sort keys follow as
+    /// tie-breakers.
+    static func evaluate(yaml: String, thisPath: String?, viewName: String?, env: BaseEnvironment,
+                         sortOverrides: [String: BaseSortKey] = [:]) -> BaseResult {
         let def = BaseDefinition(yaml: yaml)
         let formulas = def.formulas.mapValues { src in Result { try BaseParser.parse(src) }.mapError { $0 as? BaseSyntaxError ?? BaseSyntaxError(description: "\($0)") } }
         var parsedStatements: [String: Result<BaseExpr, BaseSyntaxError>] = [:]
@@ -677,7 +707,14 @@ enum BaseEngine {
         let allFiles = env.files.values.sorted { $0.path < $1.path }
 
         var views: [BaseViewResult] = []
-        for view in def.views {
+        for var view in def.views {
+            let shownName = view.name.isEmpty ? view.type.capitalized : view.name
+            var override = sortOverrides[shownName]
+            if let o = override {
+                let id = BaseDefinition.normalize(o.property)
+                override = BaseSortKey(property: id, ascending: o.ascending)
+                view.sort = [(id, o.ascending)] + view.sort.filter { $0.property != id }
+            }
             var errors: [String] = []
             func passes(_ f: BaseDefinition.Filter?, _ ev: BaseEvaluator) -> Bool {
                 guard let f else { return true }
@@ -742,6 +779,11 @@ enum BaseEngine {
             }
             func makeRow(_ r: (info: BaseFileInfo, ev: BaseEvaluator)) -> BaseRow {
                 var row = BaseRow(path: r.info.file.path, cells: columnIDs.map { cell($0, r) })
+                row.raw = columnIDs.map { id in
+                    guard id.hasPrefix("note."), let props = r.info.record?.properties else { return nil }
+                    let name = String(id.dropFirst(5))
+                    return (props.first { $0.key == name } ?? props.first { $0.key.lowercased() == name.lowercased() })?.value
+                }
                 if let img = view.image {
                     let v = value(img, r.ev)
                     switch v {
@@ -786,9 +828,13 @@ enum BaseEngine {
                 return summarize(kind, values, custom: def.summaries, env: env, sample: rows.first?.info)
             }
 
-            views.append(BaseViewResult(name: view.name.isEmpty ? view.type.capitalized : view.name, type: view.type,
+            var result = BaseViewResult(name: shownName, type: view.type,
                                         columns: columns, groups: groups, total: total, summaries: summaries,
-                                        error: errors.first))
+                                        error: errors.first)
+            result.columnSize = view.columnSize
+            result.options = view.options
+            result.viewSort = override
+            views.append(result)
         }
         let selected = viewName.flatMap { n in views.firstIndex { $0.name.lowercased() == n.lowercased() } } ?? 0
         return BaseResult(views: views, selected: selected, error: nil)

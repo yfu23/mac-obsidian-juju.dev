@@ -200,11 +200,25 @@ public enum NoteWriter {
         return .failed("Too many files named “\(base)”")
     }
 
+    /// Replaces a `.base` file's YAML (the base editor) or a note's text (a property edited in a base's table cell)
+    /// when the user has unlocked that base. Same safety as `save`: only if disk still matches `baseline`.
+    public static func rewrite(_ text: String, root: URL, path: String, baseline: String) -> Outcome {
+        guard (path as NSString).pathExtension.lowercased() == "base" || isEditable(path) else {
+            return .failed("Only notes and bases can be changed")
+        }
+        return write(text, root: root, path: path, baseline: baseline)
+    }
+
     public static func save(_ text: String, root: URL, path: String, baseline: String) -> Outcome {
         guard isEditable(path) else { return .failed("Only Markdown notes can be edited") }
+        return write(text, root: root, path: path, baseline: baseline)
+    }
+
+    private static func write(_ text: String, root: URL, path: String, baseline: String) -> Outcome {
         guard let url = VaultReader.containedURL(root, path) else { return .failed("Outside the vault") }
-        guard FileManager.default.fileExists(atPath: url.path), let disk = load(root: root, path: path) else {
-            return .failed("The note no longer exists on disk")
+        guard FileManager.default.fileExists(atPath: url.path),
+              let disk = (try? Data(contentsOf: url)).flatMap({ String(data: $0, encoding: .utf8) }) else {
+            return .failed(isEditable(path) ? "The note no longer exists on disk" : "The file no longer exists on disk")
         }
         guard disk == baseline else { return .conflict(disk) }
         if disk == text { return .unchanged }

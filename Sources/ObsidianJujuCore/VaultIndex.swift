@@ -295,20 +295,36 @@ public actor VaultIndex {
 
     // MARK: Rendering
 
-    public func renderPayload(for path: String) -> RenderPayload {
+    /// `baseSort`: view-only sorts (by view name) for a .base file's table headers; the file isn't changed.
+    public func renderPayload(for path: String, baseSort: [String: BaseSortKey] = [:]) -> RenderPayload {
         let env = baseEnvironment()
         var builder = RenderPayloadBuilder(root: root, resolver: resolver) { yaml, this, view in
             BaseEngine.evaluate(yaml: yaml, thisPath: this, viewName: view, env: env)
         }
+        builder.baseSort = baseSort
+        builder.evaluateSortedBase = { yaml, this, sorts in
+            BaseEngine.evaluate(yaml: yaml, thisPath: this, viewName: nil, env: env, sortOverrides: sorts)
+        }
         builder.externals = externals
-        return builder.build(path: path)
+        var payload = builder.build(path: path)
+        if payload.kind == .base { payload.baseProperties = propertyNames() }
+        return payload
+    }
+
+    /// Every frontmatter property name used in the vault, most used first (the base editor's pickers).
+    public func propertyNames() -> [String] {
+        var counts: [String: Int] = [:]
+        for r in records.values { for p in r.properties { counts[p.key, default: 0] += 1 } }
+        return counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key.lowercased() < $1.key.lowercased() }.map(\.key)
     }
 
     // MARK: Bases
 
     /// Evaluates a base (the YAML of a `.base` file or ```base block). `thisPath` is the file `this` refers to.
-    public func evaluateBase(yaml: String, thisPath: String?, viewName: String? = nil) -> BaseResult {
-        BaseEngine.evaluate(yaml: yaml, thisPath: thisPath, viewName: viewName, env: baseEnvironment())
+    public func evaluateBase(yaml: String, thisPath: String?, viewName: String? = nil,
+                             sortOverrides: [String: BaseSortKey] = [:]) -> BaseResult {
+        BaseEngine.evaluate(yaml: yaml, thisPath: thisPath, viewName: viewName, env: baseEnvironment(),
+                            sortOverrides: sortOverrides)
     }
 
     private func baseEnvironment() -> BaseEnvironment {

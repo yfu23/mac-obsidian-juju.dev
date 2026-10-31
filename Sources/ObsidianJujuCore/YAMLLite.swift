@@ -43,6 +43,27 @@ public indirect enum YAMLValue: Equatable, Sendable {
     }
 }
 
+extension YAMLValue {
+    /// JSON with the YAML's key order kept (the page edits it and writes YAML back, as Obsidian does). Plain
+    /// numbers and true/false become JSON numbers and booleans.
+    public var json: String {
+        switch self {
+        case .null: return "null"
+        case .scalar(let s):
+            if s == "true" || s == "false" { return s }
+            if s.range(of: #"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$"#, options: .regularExpression) != nil { return s }
+            return Self.quote(s)
+        case .list(let l): return "[" + l.map(\.json).joined(separator: ",") + "]"
+        case .map(let p): return "{" + p.map { Self.quote($0.0) + ":" + $0.1.json }.joined(separator: ",") + "}"
+        }
+    }
+
+    private static func quote(_ s: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [s], options: [.fragmentsAllowed])) ?? Data("[\"\"]".utf8)
+        return String(String(decoding: data, as: UTF8.self).dropFirst().dropLast())
+    }
+}
+
 public enum YAMLLite {
     public static func parse(_ text: String) -> YAMLValue {
         var lines: [(indent: Int, text: String)] = []

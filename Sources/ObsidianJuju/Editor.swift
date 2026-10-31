@@ -331,7 +331,20 @@ struct EditControls: View {
         let m = HotkeyModifier.current.symbol
         if let session = model.editSessions[tabID] {
             EditingControls(model: model, session: session, tabID: tabID)
-        } else if NoteWriter.isEditable(path) {
+        } else if model.unlockedBases.contains(tabID) {
+            Button { model.lock(tabID: tabID) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "lock.open.fill").font(.system(size: 10))
+                    Text("Editing").font(Theme.smallFont)
+                }
+                .padding(.horizontal, 6).frame(height: 24)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Theme.accent.opacity(0.14)))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
+            .help("Lock this base (read-only, \(m)E)")
+        } else if NoteWriter.isEditable(path) || VaultModel.isBase(path) {
             Button { model.unlock(tabID: tabID) } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "lock.fill").font(.system(size: 10))
@@ -342,7 +355,9 @@ struct EditControls: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(Theme.textFaint)
-            .help("Unlock this note for editing (\(m)E). It locks again when you leave it.")
+            .help(VaultModel.isBase(path)
+                  ? "Unlock this base to change its views, sort, filters and properties, and edit values in its table (\(m)E). It locks again when you leave it."
+                  : "Unlock this note for editing (\(m)E). It locks again when you leave it.")
         } else {
             HStack(spacing: 4) {
                 Image(systemName: "lock.fill").font(.system(size: 10))

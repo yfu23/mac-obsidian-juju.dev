@@ -328,6 +328,20 @@ final class NoteWebController: NSObject, WKScriptMessageHandler, WKNavigationDel
         case "copy":
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(body["text"] as? String ?? "", forType: .string)
+        case "baseSave":
+            if let path = body["path"] as? String, let yaml = body["yaml"] as? String {
+                model?.saveBase(tabID: tabID, path: path, yaml: yaml)
+            }
+        case "baseSort":
+            guard let path = body["path"] as? String, let view = body["view"] as? String else { break }
+            let sort = (body["property"] as? String).map {
+                BaseSortKey(property: $0, ascending: (body["direction"] as? String)?.uppercased() != "DESC")
+            }
+            model?.setBaseSort(tabID: tabID, path: path, view: view, sort: sort)
+        case "baseCell":
+            guard let note = body["path"] as? String, let property = body["property"] as? String else { break }
+            let value: PropertyValue = (body["list"] as? [String]).map { .list($0) } ?? .text(body["text"] as? String ?? "")
+            model?.setBaseCell(tabID: tabID, notePath: note, property: property, value: value)
         case "copyImageFile":
             model?.copyImageFile(src: body["src"] as? String ?? "", path: body["what"] as? String == "path")
         case "openInObsidian":

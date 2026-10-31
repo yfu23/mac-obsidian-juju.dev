@@ -24,6 +24,12 @@ public struct RenderPayload: Encodable, Sendable {
     public let embeds: [String: Embed]
     /// The evaluated base when this file is a `.base`.
     public var base: BaseResult?
+    /// A `.base` file's settings as JSON (key order kept), for editing it in the page.
+    public var baseConfig: String?
+    /// Note property names in the vault (for the base editor's pickers).
+    public var baseProperties: [String]?
+    /// The base is unlocked for editing (set by the app).
+    public var baseEditable = false
     /// ```base code blocks: `baseBlockKey(source, content)` → evaluated base.
     public var bases: [String: BaseResult] = [:]
     /// `![](<juju:name>)` images: `JujuRef.key(name)` → URL (vault first, then outside attachment folders).
@@ -70,6 +76,9 @@ struct RenderPayloadBuilder {
     var externals = ExternalAttachments.empty
     /// (yaml, thisPath, viewName) → result
     let evaluateBase: (String, String?, String?) -> BaseResult
+    /// View-only sorts for the .base file being rendered (by view name); not used for blocks or embeds.
+    var baseSort: [String: BaseSortKey] = [:]
+    var evaluateSortedBase: ((String, String?, [String: BaseSortKey]) -> BaseResult)?
     static let maxEmbedDepth = 4
 
     func build(path: String) -> RenderPayload {
@@ -77,7 +86,13 @@ struct RenderPayloadBuilder {
         let title = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         if kind == .base {
             var payload = RenderPayload(path: path, title: title, kind: kind, properties: [], body: "", resolve: [:], embeds: [:])
-            payload.base = evaluateBase(VaultReader.readText(root, path) ?? "", path, nil)
+            let yaml = VaultReader.readText(root, path) ?? ""
+            if let sorted = evaluateSortedBase, !baseSort.isEmpty {
+                payload.base = sorted(yaml, path, baseSort)
+            } else {
+                payload.base = evaluateBase(yaml, path, nil)
+            }
+            payload.baseConfig = YAMLLite.parse(yaml).json
             return payload
         }
         guard kind == .markdown else {

@@ -108,6 +108,24 @@ reading view.
   Mission Control shortcuts for Ctrl + `↑` / `↓` (System Settings → Keyboard → Keyboard Shortcuts → Mission
   Control), or macOS takes those keys first.
 
+### Editing bases
+Open a `.base` file and unlock it (the lock in its header, or CC+E) to edit it as in Obsidian; it locks again when you
+leave it.
+- **Toolbar**: **Sort** (sort keys and group by), **Filter** ("All views" / "This view"; Obsidian's simple builder
+  with all / any / none groups, nested groups, and an advanced mode `</>` for any filter formula), **Properties**
+  (show, hide and drag to reorder columns; "Find or create…"; "Add formula"; "Hide all") and **View** (name, layout
+  table / cards / list, result limit, row height, card size, image property, fit and aspect ratio, list markers,
+  indent, separator; duplicate or delete the view).
+- **Views**: "+" adds a table, cards or list view; right-click (or double-click) a view tab to rename, duplicate,
+  delete it or make it the default view (first).
+- **Column headers** (table): click for Sort A → Z / Z → A, clear sort, group by, Summarize… (Average, Sum, …,
+  and the base's custom summaries), Edit property… (display name) or Edit formula…, reset size and Hide column;
+  drag a header's right edge to resize.
+- **Cells**: click a note property's cell to change it (Enter saves, Esc cancels; list values are comma-separated)
+  and tick checkboxes directly. This changes that note's frontmatter (only that property's lines), as in Obsidian.
+Settings changes rewrite the whole `.base` file the way Obsidian does (comments in it aren't kept). Column widths,
+row height and the card / list options also show while the base is locked.
+
 ### Deleting notes and folders
 Right-click a note, file or folder in the file list → "Delete", or run "Delete current file" (palette, File menu).
 You're asked first ("Don't ask again" turns that off; Settings → "Confirm before deleting notes and folders" turns it

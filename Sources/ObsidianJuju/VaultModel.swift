@@ -119,6 +119,11 @@ final class VaultModel: ObservableObject {
     @Published var jujuPixUnlocked = false
     @Published var showJujuPixUnlock = false
     @Published var pendingDelete: PendingDelete?
+    /// Tabs whose `.base` is unlocked: its toolbar, column menus and table cells can change it (and its notes).
+    @Published var unlockedBases: Set<UUID> = []
+    /// View-only column sorts of read-only .base tabs (by view name), for the path they were chosen on. Never written
+    /// to the file; dropped on navigating to another path, closing the tab, or unlocking the base.
+    var baseSorts: [UUID: (path: String, sorts: [String: BaseSortKey])] = [:]
     @Published var pendingAttachments: PendingAttachments?
     /// Where "copy" actions put text (the system clipboard; tests use a private pasteboard).
     var copyPasteboard = NSPasteboard.general
@@ -217,7 +222,9 @@ final class VaultModel: ObservableObject {
         for tab in tabs {
             guard let p = tab.current?.path else { continue }
             let basesStale = controllers[tab.id]?.showsBases == true && (!snap.changed.isEmpty || structureChanged)
-            if snap.changed.contains(p) || basesStale || (structureChanged && tab.id == activeTabID) { rerender(tabID: tab.id) }
+            guard snap.changed.contains(p) || basesStale || (structureChanged && tab.id == activeTabID) else { continue }
+            // An unlocked base updates in place, so open menus and edits in progress stay.
+            if unlockedBases.contains(tab.id) { updateBaseInPlace(tabID: tab.id) } else { rerender(tabID: tab.id) }
         }
         if !searchText.isEmpty { runSearch(debounce: false) }
         refreshPanels()
@@ -284,6 +291,7 @@ final class VaultModel: ObservableObject {
         let tab = tabs.remove(at: i)
         if tab.current != nil, remember { closedTabs.append(tab) }
         controllers[id] = nil
+        baseSorts[id] = nil
         if tabs.isEmpty {
             newTab()
         } else if activeTabID == id {
@@ -346,11 +354,13 @@ final class VaultModel: ObservableObject {
         guard let index, let tab = tabs.first(where: { $0.id == tabID }), let loc = tab.current else { return }
         let c = controller(for: tabID)
         let y = scrollY ?? scrolls[tabID]?[tab.position] ?? 0
+        let sorts = viewSorts(tabID: tabID, path: loc.path)
         Task {
-            var payload = await index.renderPayload(for: loc.path)
+            var payload = await index.renderPayload(for: loc.path, baseSort: sorts)
             for (k, v) in payload.external where v.hasPrefix("juju://jjpx/") {
                 payload.external[k] = v + "?g=\(self.jujuPixGeneration)"
             }
+            payload.baseEditable = self.unlockedBases.contains(tabID)
             c.showsBases = payload.base != nil || !payload.bases.isEmpty || payload.embeds.values.contains { $0.base != nil }
             c.usesExternal = ([payload.body] + payload.embeds.values.compactMap(\.body))
                 .contains { !JujuRef.names(in: $0).isEmpty }
@@ -573,6 +583,12 @@ final class VaultModel: ObservableObject {
     func unlock(tabID: UUID) {
         guard editSessions[tabID] == nil, let root = vaultURL,
               let path = tabs.first(where: { $0.id == tabID })?.current?.path else { return }
+        if Self.isBase(path) {
+            guard unlockedBases.insert(tabID).inserted else { return }
+            baseSorts[tabID] = nil   // the editor shows (and saves) the file's own sort
+            rerender(tabID: tabID)
+            return
+        }
         guard NoteWriter.isEditable(path) else { flash("Only Markdown notes can be edited"); return }
         guard let session = EditSession(root: root, path: path) else {
             flash("This note can’t be edited (missing or not UTF-8 text)")
@@ -597,6 +613,10 @@ final class VaultModel: ObservableObject {
 
     /// Saves any pending edits and makes the note read-only again.
     func lock(tabID: UUID) {
+        if unlockedBases.remove(tabID) != nil {
+            rerender(tabID: tabID)
+            return
+        }
         guard let session = editSessions.removeValue(forKey: tabID) else { return }
         session.livePreview?.detach()
         session.flush()
@@ -611,7 +631,7 @@ final class VaultModel: ObservableObject {
     }
 
     func lockAll() {
-        for id in Array(editSessions.keys) { lock(tabID: id) }
+        for id in Array(editSessions.keys) + Array(unlockedBases) { lock(tabID: id) }
     }
 
     /// Writes pending edits everywhere (app quit).
@@ -945,6 +965,7 @@ final class VaultModel: ObservableObject {
     /// CC+E: unlock the current note, or toggle editor/preview once it's unlocked (Obsidian's edit toggle).
     func toggleEdit() {
         guard let id = activeTabID, activeTab?.current != nil else { return }
+        if unlockedBases.contains(id) { lock(tabID: id); return }
         if editSessions[id] == nil { unlock(tabID: id) } else { togglePreview(tabID: id) }
     }
 
@@ -958,3 +979,81 @@ final class VaultModel: ObservableObject {
         }
     }
 }
+
+// MARK: Editing bases (toolbar, column menus and table cells, as in Obsidian)
+
+extension VaultModel {
+    static func isBase(_ path: String) -> Bool { (path as NSString).pathExtension.lowercased() == "base" }
+
+    /// The page changed an unlocked base's settings: writes the whole file, as Obsidian does.
+    func saveBase(tabID: UUID, path: String, yaml: String) {
+        guard let root = vaultURL, unlockedBases.contains(tabID), Self.isBase(path),
+              tabs.first(where: { $0.id == tabID })?.current?.path == path else { return }
+        guard case .map = YAMLLite.parse(yaml) else { return flash("Couldn’t save the base: invalid settings") }
+        guard let url = VaultReader.containedURL(root, path),
+              let disk = (try? Data(contentsOf: url)).flatMap({ String(data: $0, encoding: .utf8) }) else {
+            return flash("Couldn’t save the base: it no longer exists on disk")
+        }
+        switch NoteWriter.rewrite(yaml, root: root, path: path, baseline: disk) {
+        case .saved, .unchanged:
+            updateBaseInPlace(tabID: tabID)
+            scheduleRefresh()
+        case .conflict:
+            flash("The base changed on disk; showing the new version")
+            rerender(tabID: tabID)
+        case .failed(let message):
+            flash("Couldn’t save the base: \(message)")
+        }
+    }
+
+    /// A value edited in an unlocked base's table: sets that note's property (only that property's lines change).
+    func setBaseCell(tabID: UUID, notePath: String, property: String, value: PropertyValue) {
+        guard let root = vaultURL, unlockedBases.contains(tabID), NoteWriter.isEditable(notePath), !property.isEmpty else { return }
+        // Pending typing in that note is saved first, so the edit applies on top of it.
+        editSessions.values.filter { $0.path == notePath }.forEach { $0.flush() }
+        guard let disk = NoteWriter.load(root: root, path: notePath),
+              let next = Frontmatter.apply(.set(key: property, value: value), to: disk) else {
+            return flash("Couldn’t change “\(property)” in “\((notePath as NSString).lastPathComponent)”")
+        }
+        switch NoteWriter.rewrite(next, root: root, path: notePath, baseline: disk) {
+        case .saved, .unchanged:
+            scheduleRefresh()   // re-evaluates the base (and any tab showing the note)
+        case .conflict:
+            flash("“\((notePath as NSString).lastPathComponent)” changed on disk; try again")
+            scheduleRefresh()
+        case .failed(let message):
+            flash("Couldn’t change “\(property)”: \(message)")
+        }
+    }
+
+    /// A column header clicked in a read-only .base tab: sorts that view for viewing only (nil = the file's sort).
+    func setBaseSort(tabID: UUID, path: String, view: String, sort: BaseSortKey?) {
+        guard !unlockedBases.contains(tabID), Self.isBase(path),
+              tabs.first(where: { $0.id == tabID })?.current?.path == path else { return }
+        var sorts = viewSorts(tabID: tabID, path: path)
+        sorts[view] = sort
+        baseSorts[tabID] = sorts.isEmpty ? nil : (path, sorts)
+        updateBaseInPlace(tabID: tabID)
+    }
+
+    /// The tab's view-only base sorts, if they were chosen on `path` (stale ones are dropped).
+    func viewSorts(tabID: UUID, path: String) -> [String: BaseSortKey] {
+        guard let entry = baseSorts[tabID] else { return [:] }
+        if entry.path == path, !unlockedBases.contains(tabID) { return entry.sorts }
+        baseSorts[tabID] = nil
+        return [:]
+    }
+
+    /// Re-evaluates a base and hands the page the new results without reloading it.
+    func updateBaseInPlace(tabID: UUID) {
+        guard let index, let path = tabs.first(where: { $0.id == tabID })?.current?.path, Self.isBase(path) else { return }
+        let c = controller(for: tabID)
+        let sorts = viewSorts(tabID: tabID, path: path)
+        Task {
+            var payload = await index.renderPayload(for: path, baseSort: sorts)
+            payload.baseEditable = self.unlockedBases.contains(tabID)
+            c.webView.evaluateJavaScript("window.juju.updateBase(\(payload.json()))", completionHandler: nil)
+        }
+    }
+}
+

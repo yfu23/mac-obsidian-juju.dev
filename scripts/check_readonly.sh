@@ -3,7 +3,8 @@
 #   - IndexCache.swift writes only to ~/Library/Caches.
 #   - NoteWriter.swift overwrites an existing note the user explicitly unlocked (per-note edit mode),
 #     and is only called from EditSession (Editor.swift); it also creates new empty notes the user asked
-#     for (VaultModel.createNote), never overwriting, and deletes what the user confirmed (VaultModel.performDelete).
+#     for (VaultModel.createNote), never overwriting, deletes what the user confirmed (VaultModel.performDelete),
+#     and rewrites an unlocked base or a note property edited in its table (VaultModel, NoteWriter.rewrite).
 # Fails if a file-writing API appears anywhere else, so the viewer stays read-only as features are added.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -22,10 +23,10 @@ if [ -n "$callers" ]; then
   echo "$callers"
   exit 1
 fi
-creators=$(grep -rnE 'NoteWriter\.(create|saveAttachment|copyNote|delete)' Sources/ObsidianJuju Sources/ObsidianJujuCore --include=*.swift \
+creators=$(grep -rnE 'NoteWriter\.(create|saveAttachment|copyNote|delete|rewrite)' Sources/ObsidianJuju Sources/ObsidianJujuCore --include=*.swift \
   | grep -v '/VaultModel.swift:' | grep -v '/NoteWriter.swift:' || true)
 if [ -n "$creators" ]; then
-  echo "Read-only check FAILED — NoteWriter.create / saveAttachment / copyNote / delete may only be called from VaultModel:"
+  echo "Read-only check FAILED — NoteWriter.create / saveAttachment / copyNote / delete / rewrite may only be called from VaultModel:"
   echo "$creators"
   exit 1
 fi

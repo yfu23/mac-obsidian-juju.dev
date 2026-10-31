@@ -296,6 +296,25 @@ Task {
     check("base formula null", table.groups[0].rows[1].cells[2].t, "null")
     check("base summary", table.summaries, ["", "66.667", ""])
     check("base total", table.total, 3)
+    // View-only header sort (read-only .base tabs): replaces the primary sort, applies before `limit`.
+    let asc = await index.evaluateBase(yaml: baseYAML, thisPath: nil,
+                                       sortOverrides: ["Table": BaseSortKey(property: "front", ascending: true)])
+    check("view sort asc", asc.views[0].groups[0].rows.map { $0.cells[0].text }, ["Gravel", "Old", "Road"])
+    check("view sort echoed", asc.views[0].viewSort, BaseSortKey(property: "note.front", ascending: true))
+    check("view sort other view untouched", asc.views[1].viewSort == nil, true)
+    check("no view sort by default", table.viewSort == nil, true)
+    let limited = await index.evaluateBase(
+        yaml: "views:\n  - type: table\n    name: T\n    filters:\n      and:\n        - file.hasTag(\"bike\")\n    sort:\n      - property: front\n        direction: DESC\n    limit: 1\n",
+        thisPath: nil, sortOverrides: ["T": BaseSortKey(property: "front", ascending: true)])
+    check("view sort before limit", limited.views[0].groups[0].rows.map { $0.cells[0].text }, ["Gravel"])
+    put("Sorted.base", baseYAML)
+    await index.refresh()
+    let sortedPayload = await index.renderPayload(for: "Sorted.base",
+                                                  baseSort: ["Table": BaseSortKey(property: "front", ascending: true)])
+    check("payload view sort", sortedPayload.base?.views[0].groups[0].rows.first?.cells[0].text, "Gravel")
+    check("payload view sort leaves file", try? String(contentsOf: tmp.appendingPathComponent("Sorted.base"), encoding: .utf8), baseYAML)
+    try? FileManager.default.removeItem(at: tmp.appendingPathComponent("Sorted.base"))
+    await index.refresh()
     let cards = base.views[1]
     check("base groups", cards.groups.map { $0.key?.text ?? "" }, ["high", "low"])
     check("base group sizes", cards.groups.map(\.rows.count), [2, 1])
@@ -577,6 +596,14 @@ check("style callout ends at fence", styled("> [!x] T\n```\n> y\n```").first, "c
 check("style iframe", styled("<iframe width=\"560\" height=\"315\" src=\"https://www.youtube.com/embed/abc\" title=\"*x*\"></iframe>"),
       ["iframe(https://www.youtube.com/embed/abc 560x315):<iframe width=\"560\" height=\"315\" src=\"https://www.youtube.com/embed/abc\" title=\"*x*\"></iframe>"])
 
+// Bases: settings as ordered JSON for the page's editor, and view layout options.
+check("yaml json keeps order and types", YAMLLite.parse("b: 1\na: [x, \"2\"]\nc: true\nd: hi there\ne:\n  z: 0.5\n  y: ~\n").json,
+      #"{"b":1,"a":["x",2],"c":true,"d":"hi there","e":{"z":0.5,"y":null}}"#)
+check("yaml json escapes", YAMLLite.parse("f: 'say \"hi\"'\n").json, #"{"f":"say \"hi\""}"#)
+let viewDef = BaseDefinition(yaml: "views:\n  - type: cards\n    name: C\n    cardSize: 300\n    imageFit: contain\n    columnSize:\n      note.a: 120\n      file.name: 80\n")
+check("view options", viewDef.views.first?.options, ["cardSize": "300", "imageFit": "contain"])
+check("view column sizes", viewDef.views.first?.columnSize, ["note.a": 120, "file.name": 80])
+
 let linkDoc = "See [[Plan#Goals|the plan]] and [site](https://x.y) and [n](Notes/My%20Note.md) ![[pic.png|200]]"
 check("link target wiki", MarkdownStyle.linkTarget(in: linkDoc, at: 8), "Plan#Goals")
 check("link target url", MarkdownStyle.linkTarget(in: linkDoc, at: 38), "https://x.y")
@@ -683,6 +710,11 @@ do {
     check("clone next number", NoteWriter.copyNote(root: root, path: "Notes/Day.md"), .created("Notes/Day 2.md"))
     check("clone missing", NoteWriter.copyNote(root: root, path: "Notes/Nope.md"), .failed("The note no longer exists on disk"))
     check("clone non-note", NoteWriter.copyNote(root: root, path: "Notes/assets/Pasted image 1.png"), .failed("Only Markdown notes can be duplicated"))
+    // Editing an unlocked base: the whole .base rewritten; a note property set from a table cell.
+    try? "views:\n  - type: table\n".write(to: root.appendingPathComponent("B.base"), atomically: false, encoding: .utf8)
+    check("rewrite base", NoteWriter.rewrite("views: []\n", root: root, path: "B.base", baseline: "views:\n  - type: table\n"), .saved)
+    check("rewrite conflict", NoteWriter.rewrite("x: 1\n", root: root, path: "B.base", baseline: "stale"), .conflict("views: []\n"))
+    check("rewrite refuses other files", NoteWriter.rewrite("x", root: root, path: "a.txt", baseline: ""), .failed("Only notes and bases can be changed"))
     // Deleting (Obsidian's "Deleted files" setting): the vault's .trash folder or permanently; never outside.
     let fmD = FileManager.default
     try? fmD.createDirectory(at: root.appendingPathComponent("Del/Sub"), withIntermediateDirectories: true)
